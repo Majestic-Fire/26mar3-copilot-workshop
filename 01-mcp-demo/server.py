@@ -6,12 +6,9 @@ Demonstrates what happens under the hood when Copilot calls an MCP tool.
 
 HKO API docs: https://data.weather.gov.hk/weatherAPI/opendata/weather.php
 Supported datasets:
-  - flw:  本港地區天氣預報 (Local Weather Forecast)
-  - fnd:  九天天氣預報 (9-Day Weather Forecast)
-  - rhrread: 本港地區天氣報告 (Current Weather Report)
-  - warnsum: 天氣警告一覽 (Weather Warning Summary)
-  - warningInfo: 詳細天氣警告資訊 (Detailed Weather Warning Info)
-  - swt:  特別天氣提示 (Special Weather Tips)
+  - flw:     Local Weather Forecast (本港地區天氣預報)
+  - fnd:     9-Day Weather Forecast (九天天氣預報)
+  - rhrread: Current Weather Report (本港地區天氣報告)
 
 Run directly:  python server.py
 Or via MCP client in VS Code (see .vscode/mcp.json)
@@ -36,7 +33,11 @@ def _fetch(data_type: str, lang: str = "en") -> dict | list | str:
     req = Request(url, headers={"User-Agent": "MCP-Workshop/1.0"})
     try:
         with urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            raw_response = resp.read().decode("utf-8")
+            try:
+                return json.loads(raw_response)
+            except json.JSONDecodeError:
+                return f"Error: invalid JSON response from HKO API. Raw response: {raw_response}"
     except URLError as e:
         return f"Error fetching data from HKO API: {e}"
     except json.JSONDecodeError:
@@ -178,16 +179,16 @@ def get_current_weather(lang: Lang = "en") -> str:
             parts.append(f"🌧️ Rainfall ({start} → {end}):\n" + "\n".join(rains))
 
     # UV index
-    uv = data.get("uvindex", {})
-    uv_data = uv.get("data", [])
+    uv = data.get("uvindex")
+    uv_data = uv.get("data", []) if isinstance(uv, dict) else []
     if uv_data:
         uvs = [f"  {u.get('place', '?')}: {u.get('value', '?')} ({u.get('desc', '')})" for u in uv_data]
         if uvs:
             parts.append("☀️ UV Index:\n" + "\n".join(uvs))
 
     # Lightning
-    lightning = data.get("lightning", {})
-    lightning_data = lightning.get("data", [])
+    lightning = data.get("lightning")
+    lightning_data = lightning.get("data", []) if isinstance(lightning, dict) else []
     if lightning_data:
         strikes = [f"  ⚡ {l.get('place', '?')}" for l in lightning_data if l.get("occur")]
         if strikes:
@@ -217,141 +218,6 @@ def get_current_weather(lang: Lang = "en") -> str:
         parts.append(f"⏰ Updated: {data['updateTime']}")
 
     return "\n\n".join(parts) if parts else json.dumps(data, ensure_ascii=False, indent=2)
-
-
-# ── Tool 4: Weather Warning Summary (warnsum) ────────────────────────
-
-_WARNING_NAMES = {
-    "WFIRE": "Fire Danger Warning",
-    "WFROST": "Frost Warning",
-    "WHOT": "Very Hot Weather Warning",
-    "WCOLD": "Cold Weather Warning",
-    "WMSGNL": "Strong Monsoon Signal",
-    "WRAIN": "Rainstorm Warning Signal",
-    "WFNTSA": "Special Announcement on Flooding in Northern NT",
-    "WL": "Landslip Warning",
-    "WTCSGNL": "Tropical Cyclone Warning Signal",
-    "WTMW": "Tsunami Warning",
-    "WTS": "Thunderstorm Warning",
-}
-
-
-@mcp.tool()
-def get_weather_warnings(lang: Lang = "en") -> str:
-    """
-    Get the weather warning summary for Hong Kong (天氣警告一覽).
-    Shows all active weather warnings with their codes, types, and issue times.
-    lang: 'en' for English, 'tc' for Traditional Chinese, 'sc' for Simplified Chinese.
-    """
-    data = _fetch("warnsum", lang)
-    if isinstance(data, str):
-        return data
-
-    if not data or (isinstance(data, dict) and not data):
-        return "✅ No active weather warnings."
-
-    lines = []
-    for key, info in data.items():
-        if not isinstance(info, dict):
-            continue
-        name = info.get("name", _WARNING_NAMES.get(key, key))
-        code = info.get("code", "")
-        action = info.get("actionCode", "")
-        wtype = info.get("type", "")
-        issued = info.get("issueTime", "")
-        expires = info.get("expireTime", "")
-
-        line = f"⚠️ {name}"
-        if wtype:
-            line += f" ({wtype})"
-        line += f"\n   Code: {code} | Action: {action}"
-        line += f"\n   Issued: {issued}"
-        if expires:
-            line += f" | Expires: {expires}"
-        lines.append(line)
-
-    if not lines:
-        return "✅ No active weather warnings."
-
-    return "\n\n".join(lines)
-
-
-# ── Tool 5: Detailed Weather Warning Info (warningInfo) ───────────────
-
-@mcp.tool()
-def get_weather_warning_details(lang: Lang = "en") -> str:
-    """
-    Get detailed weather warning information for Hong Kong (詳細天氣警告資訊).
-    Returns full warning text content for all active warnings.
-    lang: 'en' for English, 'tc' for Traditional Chinese, 'sc' for Simplified Chinese.
-    """
-    data = _fetch("warningInfo", lang)
-    if isinstance(data, str):
-        return data
-
-    details = data.get("details", [])
-    if not details:
-        return "✅ No detailed weather warning information available."
-
-    parts = []
-    for warning in details:
-        code = warning.get("warningStatementCode", "?")
-        subtype = warning.get("subtype", "")
-        update_time = warning.get("updateTime", "")
-        name = _WARNING_NAMES.get(code, code)
-
-        header = f"⚠️ {name}"
-        if subtype:
-            header += f" ({subtype})"
-        header += f"\n   Updated: {update_time}"
-
-        contents = warning.get("contents", [])
-        text_lines = []
-        for c in contents:
-            if isinstance(c, str):
-                text_lines.append(f"   {c}")
-            elif isinstance(c, dict):
-                for v in c.values():
-                    if isinstance(v, list):
-                        text_lines.extend(f"   {item}" for item in v if isinstance(item, str))
-                    elif isinstance(v, str):
-                        text_lines.append(f"   {v}")
-
-        parts.append(header + "\n" + "\n".join(text_lines) if text_lines else header)
-
-    return "\n\n".join(parts)
-
-
-# ── Tool 6: Special Weather Tips (swt) ────────────────────────────────
-
-@mcp.tool()
-def get_special_weather_tips(lang: Lang = "en") -> str:
-    """
-    Get special weather tips for Hong Kong (特別天氣提示).
-    Returns any active special weather tips issued by the HKO.
-    lang: 'en' for English, 'tc' for Traditional Chinese, 'sc' for Simplified Chinese.
-    """
-    data = _fetch("swt", lang)
-    if isinstance(data, str):
-        return data
-
-    if not data:
-        return "✅ No special weather tips at this time."
-
-    tips = data.get("swt", [])
-    if not tips:
-        return "✅ No special weather tips at this time."
-
-    lines = []
-    for tip in tips:
-        desc = tip.get("desc", "")
-        update = tip.get("updateTime", "")
-        if desc:
-            lines.append(f"💡 {desc}")
-            if update:
-                lines.append(f"   Updated: {update}")
-
-    return "\n\n".join(lines) if lines else "✅ No special weather tips at this time."
 
 
 if __name__ == "__main__":
